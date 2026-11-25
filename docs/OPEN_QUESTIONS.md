@@ -23,6 +23,11 @@ Questions about the bot's design and analysis that are still open. Add to this l
 
 ## 5. Should I do nested forecasts?
 
+- **The issue:** to forecast event A, a forecaster often has to estimate the probabilities of dependent sub-events $x_1, \dots, x_n$. Right now it does that informally inside one rationale ("vibing" it).
+- **Example:** the Trump net-worth question hinged on whether Trump Media (DJT) would spike or become very volatile (it needed roughly 3–5×). The forecasters hand-waved their way through that.
+- **Idea:** when a forecast depends on a sub-quantity, run a separate forecast for that sub-quantity (its own research and forecast), then combine the results into the forecast for A.
+- **Open sub-questions:** how to control errors as they propagate up through the levels, and how to avoid getting lost in endlessly nested forecasts (when to decompose, how deep, and at what cost).
+
 ## Also raised (Nov 25)
 
 - **Sanity check fails twice:** if a cell's forecast fails a sanity check, the plan is to flag it and reforecast once. If the retry also fails, should that cell be dropped from the aggregate (keeping at least 3 cells) or kept with a flag?
