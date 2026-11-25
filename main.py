@@ -46,7 +46,13 @@ from bot import config as cfg
 from bot.cells import CURRENT_CELL, assign_cell
 from bot.dossiers import build_dossiers, combine_dossiers
 from bot.log_store import write_run_log
-from bot.postprocess import canonicalize_options, clip, to_jsonable
+from bot.postprocess import (
+    canonicalize_options,
+    clip,
+    parse_stated_probabilities,
+    pin_percentiles,
+    to_jsonable,
+)
 from bot.prompt_rules import forecast_rules
 from bot.test_selection import select_test_question
 
@@ -351,6 +357,7 @@ class FallTemplateBot2026(ForecastBot):
         upper_bound_message, lower_bound_message = (
             self._create_upper_and_lower_bound_messages(question)
         )
+        stated_instructions, stated_lines = self._stated_probability_prompt(question)
         prompt = clean_indents(
             f"""
             You are a professional forecaster interviewing for a job.
@@ -378,7 +385,9 @@ class FallTemplateBot2026(ForecastBot):
             Formatting Instructions:
             - Please notice the units requested and give your answer in these units (e.g. whether you represent a number as 1,000,000 or 1 million).
             - Never use scientific notation.
-            - Always start with a smaller number (more negative if negative) and then increase from there. The value for percentile 10 should always be less than the value for percentile 20, and so on.
+            - Always start with a smaller number (more negative if negative) and then increase from there. The value for percentile 1 should always be less than the value for percentile 5, and so on.
+            - Give all ten percentiles listed below, including the 1st, 5th, 95th and 99th, so the tails reflect your own judgment.
+            {stated_instructions}
 
             Before answering you write:
             (a) The time left until the outcome to the question is known.
@@ -393,12 +402,17 @@ class FallTemplateBot2026(ForecastBot):
 
             The last thing you write is your final answer as:
             "
-            Percentile 10: XX (lowest number value)
+            Percentile 1: XX (lowest number value)
+            Percentile 5: XX
+            Percentile 10: XX
             Percentile 20: XX
             Percentile 40: XX
             Percentile 60: XX
             Percentile 80: XX
-            Percentile 90: XX (highest number value)
+            Percentile 90: XX
+            Percentile 95: XX
+            Percentile 99: XX (highest number value)
+            {stated_lines}
             "
             """
         )
@@ -424,6 +438,7 @@ class FallTemplateBot2026(ForecastBot):
             - If the answer doesn't give the answer in the correct units, you should parse it in the right units. For instance if the answer gives numbers as $500,000,000 and units are "B $" then you should parse the answer as 0.5 (since $500,000,000 is $0.5 billion).
             - If percentiles are not explicitly given (e.g. only a single value is given) please don't return a parsed output, but rather indicate that the answer is not explicitly given in the text.
             - Turn any values that are in scientific notation into regular numbers.
+            {self._percentile_parsing_message()}
             """
         )
         percentile_list: list[Percentile] = await structure_output(
@@ -433,6 +448,7 @@ class FallTemplateBot2026(ForecastBot):
             additional_instructions=parsing_instructions,
             num_validation_samples=self._structure_output_validation_samples,
         )
+        percentile_list = self._pin_to_stated_probabilities(question, percentile_list, reasoning)
         prediction = NumericDistribution.from_question(percentile_list, question)
         logger.info(
             f"Forecasted URL {question.page_url} with prediction: {prediction.declared_percentiles}."
@@ -447,6 +463,7 @@ class FallTemplateBot2026(ForecastBot):
         upper_bound_message, lower_bound_message = (
             self._create_upper_and_lower_bound_messages(question)
         )
+        stated_instructions, stated_lines = self._stated_probability_prompt(question)
         prompt = clean_indents(
             f"""
             You are a professional forecaster interviewing for a job.
@@ -473,7 +490,9 @@ class FallTemplateBot2026(ForecastBot):
             - This is a date question, and as such, the answer must be expressed in terms of dates.
             - The dates must be written in the format of YYYY-MM-DD. If hours matter, please append the date with the hour in UTC and military time: YYYY-MM-DDTHH:MM:SSZ. No other formatting is allowed.
             - Always start with a lower date chronologically and then increase from there.
-            - Do NOT forget this. The dates must be written in chronological order starting at the earliest time at percentile 10 and increasing from there.
+            - Do NOT forget this. The dates must be written in chronological order starting at the earliest time at percentile 1 and increasing from there.
+            - Give all ten percentiles listed below, including the 1st, 5th, 95th and 99th, so the tails reflect your own judgment.
+            {stated_instructions}
 
             Before answering you write:
             (a) The time left until the outcome to the question is known.
@@ -488,12 +507,17 @@ class FallTemplateBot2026(ForecastBot):
 
             The last thing you write is your final answer as:
             "
-            Percentile 10: YYYY-MM-DD (oldest date)
+            Percentile 1: YYYY-MM-DD (oldest date)
+            Percentile 5: YYYY-MM-DD
+            Percentile 10: YYYY-MM-DD
             Percentile 20: YYYY-MM-DD
             Percentile 40: YYYY-MM-DD
             Percentile 60: YYYY-MM-DD
             Percentile 80: YYYY-MM-DD
-            Percentile 90: YYYY-MM-DD (newest date)
+            Percentile 90: YYYY-MM-DD
+            Percentile 95: YYYY-MM-DD
+            Percentile 99: YYYY-MM-DD (newest date)
+            {stated_lines}
             "
             """
         )
@@ -516,6 +540,7 @@ class FallTemplateBot2026(ForecastBot):
             - As an example, someone else guessed that the answer will be between {question.lower_bound} and {question.upper_bound}, so the numbers parsed from an answer like this would be verbatim "{question.lower_bound}" and "{question.upper_bound}".
             - The output is given as dates/times please format it into a valid datetime parsable string. Assume midnight UTC if no hour is given.
             - If percentiles are not explicitly given (e.g. only a single value is given) please don't return a parsed output, but rather indicate that the answer is not explicitly given in the text.
+            {self._percentile_parsing_message()}
             """
         )
         date_percentile_list: list[DatePercentile] = await structure_output(
@@ -533,6 +558,7 @@ class FallTemplateBot2026(ForecastBot):
             )
             for percentile in date_percentile_list
         ]
+        percentile_list = self._pin_to_stated_probabilities(question, percentile_list, reasoning)
         prediction = NumericDistribution.from_question(percentile_list, question)
         logger.info(
             f"Forecasted URL {question.page_url} with prediction: {prediction.declared_percentiles}."
@@ -587,6 +613,85 @@ class FallTemplateBot2026(ForecastBot):
         else:
             lower_bound_message = f"The outcome can not be lower than {lower_bound_number} {unit_of_measure}."
         return upper_bound_message, lower_bound_message
+
+    ############################ STATED PROBABILITIES (numeric/date) ############################
+    # See pin_percentiles in bot/postprocess.py for why these exist.
+
+    @staticmethod
+    def _bounds_as_floats(question: NumericQuestion | DateQuestion) -> tuple[float, float]:
+        if isinstance(question, DateQuestion):
+            return question.lower_bound.timestamp(), question.upper_bound.timestamp()
+        return float(question.lower_bound), float(question.upper_bound)
+
+    def _stated_probability_prompt(
+        self, question: NumericQuestion | DateQuestion
+    ) -> tuple[str, str]:
+        """(instructions, answer lines) asking for the cumulative probability at each open
+        bound and, for date questions, at today."""
+        upper_msg_value, lower_msg_value = (
+            (question.upper_bound.date().isoformat(), question.lower_bound.date().isoformat())
+            if isinstance(question, DateQuestion)
+            else (question.upper_bound, question.lower_bound)
+        )
+        explain, lines = [], []
+        if question.open_lower_bound:
+            explain.append(f"- Probability below the lower bound: the chance the outcome is {'earlier' if isinstance(question, DateQuestion) else 'lower'} than {lower_msg_value}.")
+            lines.append("Probability below the lower bound: XX%")
+        lo, hi = self._bounds_as_floats(question)
+        now = datetime.now(timezone.utc)
+        if isinstance(question, DateQuestion) and lo < now.timestamp() < hi:
+            explain.append(
+                f"- Probability before today: the chance the event already happened on a date before today ({now.date().isoformat()}). Write 0% if it has not happened."
+            )
+            lines.append("Probability before today: XX%")
+        if question.open_upper_bound:
+            explain.append(f"- Probability above the upper bound: the chance the outcome is {'later' if isinstance(question, DateQuestion) else 'higher'} than {upper_msg_value}.")
+            lines.append("Probability above the upper bound: XX%")
+        if not lines:
+            return "", ""
+        instructions = (
+            "After the percentiles, also state these cumulative probabilities directly. They set the forecast "
+            "exactly at those points, so make them agree with your percentiles. A percentile may lie beyond an "
+            "open bound; write the value you actually expect.\n" + "\n".join(explain)
+        )
+        return instructions, "\n".join(lines)
+
+    def _pin_to_stated_probabilities(
+        self,
+        question: NumericQuestion | DateQuestion,
+        percentile_list: list[Percentile],
+        reasoning: str,
+    ) -> list[Percentile]:
+        stated = parse_stated_probabilities(reasoning)
+        lo, hi = self._bounds_as_floats(question)
+        anchors = []
+        if question.open_lower_bound and "below" in stated:
+            anchors.append((stated["below"], lo))
+        if question.open_upper_bound and "above" in stated:
+            anchors.append((1 - stated["above"], hi))
+        now = datetime.now(timezone.utc).timestamp()
+        if isinstance(question, DateQuestion) and "past" in stated and lo < now < hi:
+            anchors.append((stated["past"], now))
+        if not anchors:
+            return percentile_list
+        kept, dropped = pin_percentiles(
+            [(x.percentile, x.value) for x in percentile_list], anchors,
+            lower=lo, upper=hi,
+            open_lower=question.open_lower_bound, open_upper=question.open_upper_bound,
+        )
+        if dropped:
+            logger.warning(
+                f"{question.page_url}: dropped {len(dropped)} percentile(s) beyond a bound or "
+                f"contradicting the stated probabilities {stated}: {dropped}"
+            )
+        return [Percentile(percentile=p, value=v) for p, v in kept]
+
+    @staticmethod
+    def _percentile_parsing_message() -> str:
+        return (
+            "- 'Percentile N' means the N-th percentile: return it as N/100 (Percentile 1 -> 0.01, Percentile 99 -> 0.99).\n"
+            "- Ignore lines that start with 'Probability below', 'Probability above' or 'Probability before'. They are not percentiles."
+        )
 
     ##################################### CONDITIONAL QUESTIONS #####################################
 
