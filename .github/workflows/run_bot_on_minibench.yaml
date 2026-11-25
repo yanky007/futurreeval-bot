@@ -6,7 +6,7 @@ on:
     - cron: "9,29,49 * * * *" # offset from the main workflow
 
 concurrency:
-  group: forecast-minibench
+  group: forecast-paid
   cancel-in-progress: false   # never kill a run mid-question
 
 jobs:

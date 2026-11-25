@@ -6,7 +6,7 @@ on:
     - cron: "4,24,44 * * * *" # every 20 min, off the hour (GitHub delays runs at :00)
 
 concurrency:
-  group: forecast-main
+  group: forecast-paid
   cancel-in-progress: false   # never kill a run mid-question
 
 jobs:

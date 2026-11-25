@@ -1,5 +1,14 @@
 # Quickstart: from zero to live in 10 steps (detailed)
 
+> **November 24 correction:** Paid smoke tests now run exactly **one** testing-area
+> question, not the entire area. The parser and summarizer share a paced Luna
+> instance (one request every four seconds, including retries). Paid workflows
+> share a concurrency group so separate runs cannot exceed that allowance together.
+> Test Bot requires an explicit **Allow paid API calls** checkbox; it defaults off.
+> These are request/batch controls, **not a hard dollar cap**. Configure provider
+> spending limits before enabling another paid test. Never rerun an older workflow
+> attempt: it uses the old code. Start a new run after this correction is merged.
+
 This guide pairs with `futureeval-bot.zip`, which is the complete repo. You won't fork anything or install Python locally. All testing runs on GitHub's servers.
 
 **Time:** about 1.5–2 hours, much of it waiting for runs to finish.
@@ -125,6 +134,10 @@ This email is your alarm. Every problem the bot can detect shows up as a failed 
 
 ### Step 8. Probe: call every model once
 
+Before launching: configure provider spending limits, then explicitly check
+**Allow paid API calls** in the Run workflow form. Leave it unchecked while
+validating code with CI, which runs offline and has no paid model credentials.
+
 1. **Actions** tab → left sidebar **Test Bot** → **Run workflow** (button on the right) → mode **`probe`** → **Run workflow**.
 2. Wait about 2–5 minutes, then click the run → **test_job** → expand **Run bot**.
 3. You want 7 lines starting with `OK`:
@@ -156,6 +169,13 @@ This email is your alarm. Every problem the bot can detect shows up as a failed 
 **Done when:** every line is `OK`, except dossier C if AskNews hasn't replied yet.
 
 ### Step 9. Live test on the bot-testing-area
+
+**Revised scope:** Each run forecasts one question. With no question ID it selects
+one binary question if available. To test another format, enter that testing-area
+post ID in the Run workflow form. The script rejects IDs outside the open testing
+area before making forecasts. Inspect the one result and real provider charges
+before deciding whether to launch another test. The instructions below about
+checking every format apply across these separate, deliberately selected runs.
 
 The bot-testing-area is an unscored Metaculus tournament with one question of each type. Forecasting there is allowed and doesn't count.
 

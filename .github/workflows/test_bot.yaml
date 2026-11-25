@@ -4,16 +4,34 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "probe = call every model once; test_questions = forecast the bot-testing-area"
+        description: "probe = model checks; test_questions = ONE testing-area question"
         default: probe
         type: choice
         options: [probe, test_questions]
+      question_id:
+        description: "Optional testing-area post ID (blank selects one binary question)"
+        default: ""
+        type: string
+      allow_paid_calls:
+        description: "Allow paid API calls (configure provider spending limits first)"
+        default: false
+        type: boolean
+
+# Main, MiniBench, and testing share the same parser key and 20-RPM limit.
+concurrency:
+  group: forecast-paid
+  cancel-in-progress: false
 
 jobs:
   test_job:
     runs-on: ubuntu-latest
     timeout-minutes: 50
     steps:
+      - name: Require explicit permission for paid calls
+        if: ${{ !inputs.allow_paid_calls }}
+        run: |
+          echo "Paid calls are disabled. Configure provider limits, then explicitly enable this input."
+          exit 1
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
@@ -25,8 +43,13 @@ jobs:
       - name: Run bot
         run: |
           if [ "${{ inputs.mode }}" = "probe" ]; then uv run python scripts/probe_models.py
-          else uv run python main.py --mode test_questions; fi
+          else
+            args=()
+            if [ -n "$TEST_QUESTION_ID" ]; then args+=(--question-id "$TEST_QUESTION_ID"); fi
+            uv run python main.py --mode test_questions "${args[@]}"
+          fi
         env:
+          TEST_QUESTION_ID: ${{ inputs.question_id }}
           LOG_LEVEL: WARNING
           METACULUS_TOKEN: ${{ secrets.METACULUS_TOKEN }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}

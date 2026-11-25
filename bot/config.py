@@ -1,5 +1,6 @@
 """Every tunable lives here. Verify model IDs with scripts/probe_models.py before going live."""
 from forecasting_tools import GeneralLlm
+from bot.request_pacing import PacedLlm
 
 # ---- Models -------------------------------------------------------------------
 # Sol and Opus go through OpenRouter (one key, proven request format).
@@ -30,6 +31,12 @@ MEMBER_CLIP = (0.02, 0.98)         # each binary forecast
 FINAL_CLIP = (0.02, 0.98)          # aggregate, when >= 2 model families succeeded
 FINAL_CLIP_ONE_MODEL = (0.05, 0.95)  # aggregate, when only one family succeeded
 MC_FLOOR = 0.005                   # minimum probability per multiple-choice option
+
+
+def build_support_llm() -> GeneralLlm:
+    # Use this SAME instance for parser and summarizer: 15 requests/minute total.
+    # Pacing is applied to physical attempts, including library retries.
+    return PacedLlm(model=CHEAP, interval_s=4.0, temperature=None, allowed_tries=1)
 
 
 def build_forecasters() -> dict[str, GeneralLlm]:

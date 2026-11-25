@@ -48,6 +48,7 @@ from bot.dossiers import build_dossiers, combine_dossiers
 from bot.log_store import write_run_log
 from bot.postprocess import canonicalize_options, clip, to_jsonable
 from bot.prompt_rules import forecast_rules
+from bot.test_selection import select_test_question
 
 dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
@@ -785,8 +786,14 @@ if __name__ == "__main__":
         default="tournament",
         help="What to forecast on (default: tournament)",
     )
+    parser.add_argument(
+        "--question-id", type=int,
+        help="Testing-area post ID for a single-question smoke test (optional)",
+    )
     args = parser.parse_args()
     run_mode: str = args.mode
+    if args.question_id is not None and run_mode not in ("test_questions", "dry_run"):
+        parser.error("--question-id is only supported for testing-area modes")
 
     check_environment(strict=True)
     publish_to_metaculus = run_mode != "dry_run"
@@ -795,6 +802,7 @@ if __name__ == "__main__":
     # Configure the bot. The `llms=` block below is commented out to use
     # whichever default models forecasting-tools picks based on your env vars;
     # uncomment and edit to pin specific models.
+    support_llm = cfg.build_support_llm()
     template_bot = ThreeByThreeBot(
         research_reports_per_question=1,
         predictions_per_research_report=9,
@@ -806,9 +814,9 @@ if __name__ == "__main__":
         required_successful_predictions=0.33,  # need >= 3 of 9 forecasts to succeed
         llms={
             "default": cfg.build_forecasters()["sol"],  # only used outside the 3x3 cells
-            "summarizer": cfg.CHEAP,
+            "summarizer": support_llm,
             "researcher": "three-dossiers",  # unused label: research is custom
-            "parser": cfg.CHEAP,
+            "parser": support_llm,
         },
     )
 
@@ -841,10 +849,14 @@ if __name__ == "__main__":
             )
         )
     elif run_mode == "dry_run":
-        # Full pipeline on the bot-testing-area, nothing posted to Metaculus.
+        # One testing-area question; no post, but this STILL uses paid models.
         template_bot.skip_previously_forecasted_questions = False
+        questions = client.get_all_open_questions_from_tournament("bot-testing-area")
+        questions.sort(key=lambda q: (not isinstance(q, BinaryQuestion), q.id_of_post))
+        selected = select_test_question(questions, args.question_id)
+        print(f"PAID SMOKE TEST: exactly 1 question: {selected[0].page_url}", flush=True)
         forecast_reports = asyncio.run(
-            template_bot.forecast_on_tournament("bot-testing-area", return_exceptions=True)
+            template_bot.forecast_questions(selected, return_exceptions=True)
         )
     elif run_mode == "metaculus_cup":
         # The Metaculus Cup may be uninitialized near the start of a season
@@ -858,14 +870,14 @@ if __name__ == "__main__":
             )
         )
     elif run_mode == "test_questions":
-        # The bot-testing-area tournament contains all question types and is
-        # the recommended target for smoke-testing your bot.
-        # https://www.metaculus.com/tournament/bot-testing-area/
+        # Never forecast the entire testing area as an unbounded paid batch.
         template_bot.skip_previously_forecasted_questions = False
+        questions = client.get_all_open_questions_from_tournament("bot-testing-area")
+        questions.sort(key=lambda q: (not isinstance(q, BinaryQuestion), q.id_of_post))
+        selected = select_test_question(questions, args.question_id)
+        print(f"PAID SMOKE TEST: exactly 1 question: {selected[0].page_url}", flush=True)
         forecast_reports = asyncio.run(
-            template_bot.forecast_on_tournament(
-                "bot-testing-area", return_exceptions=True
-            )
+            template_bot.forecast_questions(selected, return_exceptions=True)
         )
 
     write_run_log(template_bot, forecast_reports, run_mode)  # before the summary, which raises on errors
