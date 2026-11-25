@@ -45,7 +45,7 @@ from forecasting_tools import (
 from bot import config as cfg
 from bot.cells import CURRENT_CELL, assign_cell
 from bot.dossiers import build_dossiers, combine_dossiers
-from bot.log_store import write_run_log
+from bot.log_store import write_question_log, write_run_log
 from bot.postprocess import (
     canonicalize_options,
     clip,
@@ -674,15 +674,17 @@ class FallTemplateBot2026(ForecastBot):
             anchors.append((stated["past"], now))
         if not anchors:
             return percentile_list
-        kept, dropped = pin_percentiles(
+        kept, beyond, contradicting = pin_percentiles(
             [(x.percentile, x.value) for x in percentile_list], anchors,
             lower=lo, upper=hi,
             open_lower=question.open_lower_bound, open_upper=question.open_upper_bound,
         )
-        if dropped:
+        if beyond:  # expected: the stated probability already covers the mass past the bound
+            logger.info(f"{question.page_url}: replaced {len(beyond)} percentile(s) past an open bound with the stated probability")
+        if contradicting:
             logger.warning(
-                f"{question.page_url}: dropped {len(dropped)} percentile(s) beyond a bound or "
-                f"contradicting the stated probabilities {stated}: {dropped}"
+                f"{question.page_url}: dropped {len(contradicting)} percentile(s) that contradict "
+                f"the stated probabilities {stated}: {contradicting}"
             )
         return [Percentile(percentile=p, value=v) for p, v in kept]
 
@@ -810,6 +812,20 @@ class ThreeByThreeBot(FallTemplateBot2026):
         self.forecasters = cfg.build_forecasters()
         self.dossiers: dict[int, dict[str, str]] = {}
         self.members: dict[int, list[dict]] = {}
+        self.log_mode: str | None = None  # set to the run mode to log each question as it finishes
+        self.logged_urls: set[str] = set()
+
+    # ---- log each question as soon as it is posted (or fails), not at the end of the run ----
+    async def _run_individual_question(self, question):
+        try:
+            report = await super()._run_individual_question(question)
+        except Exception as e:
+            if self.log_mode is not None:
+                write_question_log(self, question, self.log_mode, error=e)
+            raise
+        if self.log_mode is not None:
+            write_question_log(self, question, self.log_mode, report=report)
+        return report
 
     # ---- research: build all three dossiers once per question ----
     async def run_research(self, question: MetaculusQuestion) -> str:
@@ -924,6 +940,7 @@ if __name__ == "__main__":
             "parser": support_llm,
         },
     )
+    template_bot.log_mode = run_mode  # write each question's log as soon as it finishes
 
     # Per-mode tournament URL shown in the summary banner footer. These
     # piggyback on the forecasting_tools SDK constants and need updating

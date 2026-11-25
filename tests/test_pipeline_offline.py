@@ -2,6 +2,7 @@
 import asyncio
 
 import main
+from bot.log_store import write_run_log
 from forecasting_tools import BinaryPrediction, BinaryQuestion
 
 
@@ -103,7 +104,7 @@ async def fake_date_structure_output(text, output_type, **kwargs):
     ]
 
 
-def test_date_question_pinned_to_stated_probabilities(monkeypatch):
+def test_date_question_pinned_to_stated_probabilities(monkeypatch, tmp_path):
     now = datetime.now(timezone.utc)
     lo, hi = now - timedelta(days=1640), now + timedelta(days=184)  # range mostly in the past
     d = lambda days: (now + timedelta(days=days)).date().isoformat()
@@ -122,6 +123,8 @@ def test_date_question_pinned_to_stated_probabilities(monkeypatch):
     q = DateQuestion(question_text="When will X end?", id_of_post=321, id_of_question=654,
                      page_url="https://www.metaculus.com/questions/321", resolution_criteria="X ends.",
                      lower_bound=lo, upper_bound=hi, open_lower_bound=False, open_upper_bound=True)
+    monkeypatch.chdir(tmp_path)
+    bot.log_mode = "test_questions"
     report = asyncio.run(bot.forecast_questions([q]))[0]
 
     prompt = fakes["opus"].prompts[0]
@@ -136,3 +139,41 @@ def test_date_question_pinned_to_stated_probabilities(monkeypatch):
     assert cdf[i_today].percentile < 0.025  # was ~10% before the fix
     assert abs(cdf[-1].percentile - 0.12) < 0.025  # stated 12% inside the range
     assert all(m["ok"] for m in bot.members[321]) and len(bot.members[321]) == 9
+
+    # The log records the CDF exactly as submitted (standardized), not the declared median.
+    import json
+    rec = json.loads(next((tmp_path / "logs").rglob("321_*.json")).read_text())
+    submitted = [x.percentile for x in report.prediction.get_cdf()]
+    assert [x["p"] for x in rec["forecast"]] == submitted and len(submitted) == 201
+
+
+# ---- each question is logged as soon as it finishes, including failures ----
+def test_each_question_logged_when_it_finishes(monkeypatch, tmp_path):
+    import json
+
+    class FailsOnY(FakeLlm):
+        async def invoke(self, prompt):
+            if "Will Y happen?" in prompt:
+                raise RuntimeError("provider down")
+            return await super().invoke(prompt)
+
+    bot = make_bot(monkeypatch, {"sol": 30, "opus": 40, "gemini": 50})
+    bot.forecasters = {m: FailsOnY(p) for m, p in {"sol": 30, "opus": 40, "gemini": 50}.items()}
+    bot.log_mode = "dry_run"
+    monkeypatch.chdir(tmp_path)
+    q_y = BinaryQuestion(question_text="Will Y happen?", id_of_post=124, id_of_question=457,
+                         page_url="https://www.metaculus.com/questions/124", resolution_criteria="Y happens.")
+    reports = asyncio.run(bot.forecast_questions([question(), q_y], return_exceptions=True))
+    assert isinstance(reports[1], BaseException)
+
+    # No end-of-run write_run_log call: both files must already exist.
+    ok = json.loads(next((tmp_path / "logs").rglob("123_*.json")).read_text())
+    failed = json.loads(next((tmp_path / "logs").rglob("124_*.json")).read_text())
+    assert ok["forecast"] == 0.4 and len(ok["members"]) == 9
+    assert "error" in failed and "forecast" not in failed
+    assert len(failed["members"]) == 9 and not any(m["ok"] for m in failed["members"])
+    assert set(failed["dossiers"]) == {"A", "B", "C"}  # paid-for research kept
+
+    # The end-of-run safety net doesn't duplicate them.
+    write_run_log(bot, reports, "dry_run")
+    assert len(list((tmp_path / "logs").rglob("*.json"))) == 2

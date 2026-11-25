@@ -78,11 +78,12 @@ def pin_percentiles(
     upper: float,
     open_lower: bool,
     open_upper: bool,
-) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]], list[tuple[float, float]]]:
     """Merge model percentiles `points` [(p, value)] with `anchors` [(cumulative p, value)].
-    Anchors win. Model points beyond an open bound that has an anchor are dropped (the anchor
-    already says how much mass lies beyond it), as are model points that contradict an anchor.
-    Returns (kept, dropped), both as (p, value) sorted by value."""
+    Anchors win. Model points beyond an open bound that has an anchor are dropped (expected:
+    the anchor already says how much mass lies beyond it), as are model points that contradict
+    an anchor (a real inconsistency in the model's answer).
+    Returns (kept, beyond, contradicting), each as (p, value) sorted by value."""
     anchors = sorted(anchors, key=lambda a: a[1])
     fixed: list[tuple[float, float]] = []
     for p, v in anchors:  # clamp, and force the anchors themselves to increase
@@ -94,15 +95,18 @@ def pin_percentiles(
     has_upper_anchor = open_upper and upper in anchor_values
     has_lower_anchor = open_lower and lower in anchor_values
 
-    kept, dropped = list(fixed), []
+    kept, beyond, contradicting = list(fixed), [], []
     for p, v in points:
-        beyond = (has_upper_anchor and v >= upper) or (has_lower_anchor and v <= lower)
-        contradicts = any(
+        if (has_upper_anchor and v >= upper) or (has_lower_anchor and v <= lower):
+            beyond.append((p, v))
+        elif any(
             (av <= v and p < ap + MIN_GAP) or (av >= v and p > ap - MIN_GAP) for ap, av in fixed
-        )
-        (dropped if beyond or contradicts else kept).append((p, v))
-    kept.sort(key=lambda x: (x[1], x[0]))
-    return kept, sorted(dropped, key=lambda x: x[1])
+        ):
+            contradicting.append((p, v))
+        else:
+            kept.append((p, v))
+    by_value = lambda x: (x[1], x[0])  # noqa: E731
+    return sorted(kept, key=by_value), sorted(beyond, key=by_value), sorted(contradicting, key=by_value)
 
 
 def to_jsonable(value):
